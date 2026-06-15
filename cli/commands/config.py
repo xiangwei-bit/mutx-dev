@@ -1,3 +1,5 @@
+from urllib.parse import urlparse
+
 import click
 
 from cli.config import current_config
@@ -62,8 +64,21 @@ def set_config(key: str, value: str, unset: bool):
         return
 
     if key == "api_url":
-        config.api_url = value
-        click.echo(f"API URL set to: {value}")
+        if value is None or not value.strip():
+            click.echo("Error: A value is required to set 'api_url'.", err=True)
+            click.echo("Usage: mutx config set api_url <url>", err=True)
+            return
+        candidate = value.strip()
+        parsed = urlparse(candidate)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            click.echo(
+                f"Error: Invalid api_url '{value}'. "
+                "Provide a full URL starting with http:// or https://.",
+                err=True,
+            )
+            return
+        config.api_url = candidate
+        click.echo(f"API URL set to: {config.api_url}")
 
     config.save()
 
