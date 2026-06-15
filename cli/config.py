@@ -25,7 +25,13 @@ class CLIConfig:
             config_path = Path.home() / ".mutx" / "config.json"
         self.config_path = config_path
         self._runtime_api_url_override = _normalize_api_url(os.getenv("MUTX_API_URL"))
+        self._load_status: dict[str, str] = {"state": "pending", "detail": ""}
         self._config = self._load()
+
+    @property
+    def load_status(self) -> dict[str, str]:
+        """Return diagnostic info about the last config load attempt."""
+        return dict(self._load_status)
 
     def _default_config(self) -> dict[str, Any]:
         return {
@@ -44,14 +50,36 @@ class CLIConfig:
         payload: dict[str, Any] = self._default_config()
         migrated = False
 
-        if self.config_path.exists():
+        if not self.config_path.exists():
+            self._load_status = {
+                "state": "missing",
+                "detail": f"Config file not found at {self.config_path}",
+            }
+        else:
             try:
                 with open(self.config_path, encoding="utf-8") as handle:
                     loaded = json.load(handle)
                 if isinstance(loaded, dict):
                     payload.update(loaded)
-            except (json.JSONDecodeError, IOError):
-                pass
+                    self._load_status = {
+                        "state": "ok",
+                        "detail": f"Loaded config from {self.config_path}",
+                    }
+                else:
+                    self._load_status = {
+                        "state": "invalid_json",
+                        "detail": f"Config file {self.config_path} does not contain a valid JSON object",
+                    }
+            except json.JSONDecodeError as e:
+                self._load_status = {
+                    "state": "invalid_json",
+                    "detail": f"Config file {self.config_path} contains invalid JSON: {str(e)[:100]}",
+                }
+            except IOError as e:
+                self._load_status = {
+                    "state": "io_error",
+                    "detail": f"Cannot read config file {self.config_path}: {str(e)[:100]}",
+                }
 
         if payload.get("api_key") and not payload.get("access_token"):
             payload["access_token"] = payload.get("api_key")

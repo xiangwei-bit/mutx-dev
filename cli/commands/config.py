@@ -13,11 +13,19 @@ def config_group():
 def show_config():
     """Show current local configuration"""
     config = current_config()
+    load_status = config.load_status
+
+    # Show warning if config load had issues
+    if load_status["state"] != "ok":
+        click.echo(f"⚠ Config Warning: {load_status['detail']}", err=True)
+        click.echo()
+
     click.echo(f"API URL:        {config.api_url}")
     click.echo(f"API URL Source: {config.api_url_source}")
     click.echo(f"Access Token:   {'(set)' if config.access_token else '(not set)'}")
     click.echo(f"Refresh Token:  {'(set)' if config.refresh_token else '(not set)'}")
     click.echo(f"Config Path:    {config.config_path}")
+    click.echo(f"Config Status:  {load_status['state']}")
 
 
 @config_group.command(name="get")

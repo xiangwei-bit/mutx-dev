@@ -26,6 +26,7 @@ def doctor_command(output: str):
         "api_url": config.api_url,
         "api_url_source": config.api_url_source,
         "config_path": str(config.config_path),
+        "config_status": config.load_status,
         "authenticated": auth.status().authenticated,
         "api_health": "unreachable",
         "openclaw": get_gateway_health().to_payload(),
@@ -92,6 +93,14 @@ def doctor_command(output: str):
 
     click.echo(f"API URL: {payload['api_url']} ({payload['api_url_source']})")
     click.echo(f"Config Path: {payload['config_path']}")
+
+    # Show config load status
+    config_status = payload["config_status"]
+    if config_status["state"] != "ok":
+        click.echo(f"⚠ Config Status: {config_status['state']} - {config_status['detail']}")
+    else:
+        click.echo(f"Config Status: {config_status['state']}")
+
     click.echo(f"Authenticated: {'yes' if payload['authenticated'] else 'no'}")
     click.echo(f"API Health: {payload['api_health']}")
     click.echo(

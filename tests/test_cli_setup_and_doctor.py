@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 from click.testing import CliRunner
 
 from cli.config import CLIConfig
@@ -360,6 +361,7 @@ def test_doctor_json_reports_assistant_state(monkeypatch, tmp_path: Path) -> Non
         "api_url": "https://override.example.com",
         "api_url_source": "flag",
         "config_path": str(config.config_path),
+        "config_status": config.load_status,
         "authenticated": True,
         "api_health": "healthy",
         "openclaw": {
@@ -584,3 +586,153 @@ def test_cli_config_migrates_legacy_api_key(tmp_path: Path) -> None:
     stored = json.loads(config_path.read_text(encoding="utf-8"))
     assert stored["access_token"] == "legacy-access-token"
     assert "api_key" not in stored
+
+
+# --- Config load diagnostic tests ---
+
+
+def test_cli_config_missing_file_reports_status(tmp_path: Path) -> None:
+    """Config file does not exist: should fall back to defaults with 'missing' status."""
+    config_path = tmp_path / "nonexistent" / "config.json"
+    config = CLIConfig(config_path=config_path)
+
+    assert config.load_status["state"] == "missing"
+    assert str(config_path) in config.load_status["detail"]
+    # Default config is still usable
+    assert config.api_url == "http://localhost:8000"
+    assert config.access_token is None
+
+
+def test_cli_config_corrupt_json_reports_status(tmp_path: Path) -> None:
+    """Config file with invalid JSON: should fall back to defaults with 'invalid_json' status."""
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{not valid json: !!!", encoding="utf-8")
+
+    config = CLIConfig(config_path=config_path)
+
+    assert config.load_status["state"] == "invalid_json"
+    assert str(config_path) in config.load_status["detail"]
+    # Must not leak any token content in the detail message
+    assert "token" not in config.load_status["detail"].lower() or "token" not in config.load_status["detail"].split(":")[-1]
+    # Default config is still usable
+    assert config.api_url == "http://localhost:8000"
+    assert config.access_token is None
+
+
+def test_cli_config_valid_file_reports_ok_status(tmp_path: Path) -> None:
+    """Valid config file: should report 'ok' status."""
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "api_url": "https://custom.example.com",
+                "access_token": "my-secret-token",
+                "refresh_token": "my-refresh-token",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = CLIConfig(config_path=config_path)
+
+    assert config.load_status["state"] == "ok"
+    assert str(config_path) in config.load_status["detail"]
+    assert config.api_url == "https://custom.example.com"
+    assert config.access_token == "my-secret-token"
+
+
+def test_config_show_displays_warning_on_corrupt_json(monkeypatch, tmp_path: Path) -> None:
+    """'mutx config show' should display a warning when config file is corrupt."""
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{broken json content", encoding="utf-8")
+    config = CLIConfig(config_path=config_path)
+
+    monkeypatch.setattr("cli.main.CLIConfig", lambda: config)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["config", "show"])
+
+    assert result.exit_code == 0
+    assert "Config Warning" in result.output or "invalid_json" in result.output
+    assert str(config_path) in result.output
+    # Must not leak token content in output
+    assert "my-secret" not in result.output
+
+
+def test_config_show_displays_warning_on_missing_file(monkeypatch, tmp_path: Path) -> None:
+    """'mutx config show' should display a warning when config file is missing."""
+    config_path = tmp_path / "nonexistent" / "config.json"
+    config = CLIConfig(config_path=config_path)
+
+    monkeypatch.setattr("cli.main.CLIConfig", lambda: config)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["config", "show"])
+
+    assert result.exit_code == 0
+    assert "missing" in result.output.lower()
+    assert str(config_path) in result.output
+
+
+def test_config_show_ok_status_for_valid_file(monkeypatch, tmp_path: Path) -> None:
+    """'mutx config show' should show 'ok' status for a valid config file (no warning)."""
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps({"api_url": "https://api.example.com"}),
+        encoding="utf-8",
+    )
+    config = CLIConfig(config_path=config_path)
+
+    monkeypatch.setattr("cli.main.CLIConfig", lambda: config)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["config", "show"])
+
+    assert result.exit_code == 0
+    assert "Config Warning" not in result.output
+    assert "ok" in result.output
+
+
+def test_doctor_reports_config_status_corrupt_json(monkeypatch, tmp_path: Path) -> None:
+    """'mutx doctor' should report config load status when JSON is corrupt."""
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{corrupted json!!!", encoding="utf-8")
+    config = CLIConfig(config_path=config_path)
+
+    class DummyAuth:
+        def __init__(self, config: CLIConfig):
+            self.config = config
+
+        def status(self):
+            return SimpleNamespace(authenticated=False)
+
+    monkeypatch.setattr("cli.main.CLIConfig", lambda: config)
+    monkeypatch.setattr("cli.commands.doctor.AuthService", DummyAuth)
+    monkeypatch.setattr("cli.commands.doctor.AssistantService", lambda config=None: SimpleNamespace(overview=lambda: None))
+    monkeypatch.setattr("cli.commands.doctor.RuntimeStateService", lambda config=None: SimpleNamespace())
+    monkeypatch.setattr("cli.commands.doctor.prepare_runtime_state_sync", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        "cli.commands.doctor.get_gateway_health",
+        lambda: SimpleNamespace(to_payload=lambda: {"status": "unavailable", "gateway_url": None, "onboarded": False}),
+    )
+    monkeypatch.setattr(
+        "cli.commands.doctor.collect_openclaw_runtime_snapshot",
+        lambda: SimpleNamespace(to_payload=lambda: {"binding_count": 0, "binary_path": None, "home_path": None, "last_seen_at": None}),
+    )
+    monkeypatch.setattr(
+        "cli.commands.doctor.get_document_engine_readiness",
+        lambda: SimpleNamespace(to_payload=lambda: {"enabled": False, "ready": False, "driver": "unavailable"}),
+    )
+    monkeypatch.setattr(
+        "cli.commands.doctor.httpx.get",
+        lambda url, timeout=2.0: (_ for _ in ()).throw(httpx.ConnectError("unreachable")),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["doctor", "--output", "json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["config_status"]["state"] == "invalid_json"
+    assert str(config_path) in payload["config_status"]["detail"]
+
