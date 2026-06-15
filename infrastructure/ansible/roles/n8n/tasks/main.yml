@@ -1,0 +1,234 @@
+---
+- name: Install n8n dependencies
+  block:
+    - name: Install required packages
+      ansible.builtin.apt:
+        name:
+          - curl
+          - ca-certificates
+          - gnupg
+          - lsb-release
+        state: present
+        update_cache: true
+
+    - name: Ensure Docker is installed
+      ansible.builtin.include_role:
+        name: docker
+
+- name: Create n8n directories
+  block:
+    - name: Create n8n data directory
+      ansible.builtin.file:
+        path: "{{ n8n_data_path }}"
+        state: directory
+        owner: "{{ n8n_user | default('ubuntu') }}"
+        group: "{{ n8n_group | default('ubuntu') }}"
+        mode: '0755'
+
+    - name: Create n8n config directory
+      ansible.builtin.file:
+        path: "{{ n8n_config_path }}"
+        state: directory
+        owner: "{{ n8n_user | default('ubuntu') }}"
+        group: "{{ n8n_group | default('ubuntu') }}"
+        mode: '0755'
+
+    - name: Create n8n SSL directory
+      ansible.builtin.file:
+        path: "{{ n8n_ssl_path }}"
+        state: directory
+        owner: "{{ n8n_user | default('ubuntu') }}"
+        group: "{{ n8n_group | default('ubuntu') }}"
+        mode: '0755'
+
+- name: Set up PostgreSQL for n8n
+  block:
+    - name: Check if PostgreSQL container exists
+      community.docker.docker_container_info:
+        name: n8n_postgres
+      register: n8n_postgres_check
+      ignore_errors: true
+
+    - name: Create PostgreSQL container for n8n
+      community.docker.docker_container:
+        name: n8n_postgres
+        image: postgres:15
+        state: started
+        restart_policy: always
+        env:
+          POSTGRES_DB: "{{ n8n_db_name }}"
+          POSTGRES_USER: "{{ n8n_db_user }}"
+          POSTGRES_PASSWORD: "{{ n8n_db_password }}"
+        volumes:
+          - "{{ n8n_data_path }}/postgres:/var/lib/postgresql/data"
+        networks:
+          - name: n8n_network
+        pull: true
+      when: not n8n_postgres_check.exists
+
+- name: Create n8n Docker network
+  community.docker.docker_network:
+    name: n8n_network
+    driver: bridge
+    ipam_config:
+      - subnet: 172.22.0.0/16
+    state: present
+
+- name: Configure n8n environment
+  ansible.builtin.template:
+    src: n8n.env.j2
+    dest: "{{ n8n_config_path }}/n8n.env"
+    owner: "{{ n8n_user | default('ubuntu') }}"
+    group: "{{ n8n_group | default('ubuntu') }}"
+    mode: '0640'
+  no_log: true
+
+- name: Create n8n Docker Compose file
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ n8n_config_path }}/docker-compose.yml"
+    owner: "{{ n8n_user | default('ubuntu') }}"
+    group: "{{ n8n_group | default('ubuntu') }}"
+    mode: '0644'
+  notify: Restart n8n
+
+- name: Start n8n container
+  community.docker.docker_compose_v2:
+    project_src: "{{ n8n_config_path }}"
+    state: present
+
+- name: Set up SSL with Let's Encrypt
+  block:
+    - name: Check if Certbot is installed
+      ansible.builtin.command: which certbot
+      register: n8n_certbot_check
+      ignore_errors: true
+      changed_when: false
+
+    - name: Install Certbot
+      ansible.builtin.apt:
+        name: certbot
+        state: present
+      when: n8n_certbot_check.rc != 0
+
+    - name: Generate SSL certificate
+      ansible.builtin.command: >
+        certbot certonly --standalone
+        --non-interactive
+        --agree-tos
+        --email {{ n8n_ssl_email }}
+        -d {{ n8n_domain }}
+      args:
+        creates: "/etc/letsencrypt/live/{{ n8n_domain }}/fullchain.pem"
+      when: n8n_ssl_enabled | bool
+
+    - name: Copy SSL certificates to n8n directory
+      ansible.builtin.copy:
+        src: "/etc/letsencrypt/live/{{ n8n_domain }}/"
+        dest: "{{ n8n_ssl_path }}/"
+        owner: "{{ n8n_user | default('ubuntu') }}"
+        group: "{{ n8n_group | default('ubuntu') }}"
+        mode: '0644'
+      when: n8n_ssl_enabled | bool
+      notify: Restart n8n
+
+    - name: Set up SSL renewal cron
+      ansible.builtin.cron:
+        name: "Let's Encrypt SSL renewal for n8n"
+        job: "certbot renew --quiet --deploy-hook 'docker exec n8n_1 nginx -s reload' 2>&1"
+        day: "*/{{ n8n_ssl_renewal_days | default(30) }}"
+        hour: 3
+        minute: 30
+      when: n8n_ssl_enabled | bool
+
+- name: Configure n8n webhooks
+  block:
+    - name: Update webhook URL in n8n config
+      ansible.builtin.lineinfile:
+        path: "{{ n8n_config_path }}/n8n.env"
+        regexp: "^WEBHOOK_URL="
+        line: "WEBHOOK_URL=https://{{ n8n_domain }}/webhook"
+      when: n8n_ssl_enabled | bool
+
+    - name: Update webhook test URL in n8n config
+      ansible.builtin.lineinfile:
+        path: "{{ n8n_config_path }}/n8n.env"
+        regexp: "^WEBHOOK_TEST="
+        line: "WEBHOOK_TEST=https://{{ n8n_domain }}/webhook-test"
+      when: n8n_ssl_enabled | bool
+
+- name: Set up n8n systemd service (alternative to Docker)
+  when: false
+  block:
+    - name: Create n8n systemd service
+      ansible.builtin.template:
+        src: n8n.service.j2
+        dest: "/etc/systemd/system/n8n.service"
+        mode: '0644'
+      when: not n8n_use_docker | default(true)
+      notify:
+        - Reload systemd
+        - Restart n8n
+
+    - name: Enable n8n service
+      ansible.builtin.systemd:
+        name: n8n
+        enabled: true
+        state: started
+      when: not n8n_use_docker | default(true)
+
+- name: Wait for n8n to be ready
+  ansible.builtin.wait_for:
+    port: "{{ n8n_port }}"
+    delay: 5
+    timeout: 60
+
+- name: Set up n8n API key
+  block:
+    - name: Generate n8n API key
+      ansible.builtin.command: openssl rand -hex 32
+      register: n8n_api_key_result
+      changed_when: false
+
+    - name: Add API key to n8n config
+      ansible.builtin.lineinfile:
+        path: "{{ n8n_config_path }}/n8n.env"
+        regexp: "^N8N_API_KEY="
+        line: "N8N_API_KEY={{ n8n_api_key_result.stdout }}"
+      no_log: true
+
+- name: Configure n8n security settings
+  ansible.builtin.lineinfile:
+    path: "{{ n8n_config_path }}/n8n.env"
+    regexp: "^{{ item.key }}="
+    line: "{{ item.key }}={{ item.value }}"
+  loop:
+    - { key: "N8N_SECURE_COOKIE", value: "{{ 'true' if n8n_ssl_enabled | bool else 'false' }}" }
+    - { key: "N8N_COOKIE_SECURITY", value: "{{ 'true' if n8n_ssl_enabled | bool else 'false' }}" }
+    - { key: "N8N_COOKIE_SAME_SITE", value: "{{ 'none' if n8n_ssl_enabled | bool else 'lax' }}" }
+
+- name: Set up n8n backup
+  block:
+    - name: Create backup directory
+      ansible.builtin.file:
+        path: "{{ n8n_backup_path }}"
+        state: directory
+        owner: "{{ n8n_user | default('ubuntu') }}"
+        group: "{{ n8n_group | default('ubuntu') }}"
+        mode: '0755'
+
+    - name: Create backup script
+      ansible.builtin.template:
+        src: n8n_backup.sh.j2
+        dest: "{{ n8n_config_path }}/backup.sh"
+        owner: "{{ n8n_user | default('ubuntu') }}"
+        group: "{{ n8n_group | default('ubuntu') }}"
+        mode: '0755'
+
+    - name: Set up backup cron job
+      ansible.builtin.cron:
+        name: "n8n backup"
+        job: "{{ n8n_config_path }}/backup.sh"
+        day: "*/{{ n8n_backup_days | default(1) }}"
+        hour: 2
+        minute: 0

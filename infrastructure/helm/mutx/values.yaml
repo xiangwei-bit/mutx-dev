@@ -1,0 +1,45 @@
+image:
+  repository: mutx/mutx
+  tag: latest
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+service:
+  type: ClusterIP
+  port: 8000
+
+ingress:
+  enabled: false
+  className: nginx
+  host: mutx.local
+  tls:
+    enabled: true
+    secretName: mutx-tls
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 100m
+    memory: 256Mi
+
+env:
+  {}
+  # Example:
+  # REDIS_URL: "redis://localhost:6379/0"
+  # LOG_LEVEL: "INFO"
+
+secretEnv:
+  {}
+  # Example:
+  # DATABASE_URL: "postgresql://user:pass@localhost:5432/mutx"
+  # JWT_SECRET: "replace-me"
+  # SECRET_ENCRYPTION_KEY: "replace-me"
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 75

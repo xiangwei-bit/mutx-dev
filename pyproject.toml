@@ -1,0 +1,94 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mutx-cli"
+version = "1.4.0"
+description = "CLI for mutx.dev - Deploy and manage agents"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "BUSL-1.1"
+authors = [
+    {name = "mutx.dev", email = "hello@mutx.dev"},
+]
+keywords = ["cli", "mutx", "agents", "deployment"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "click>=8.1.0",
+    "httpx>=0.26.0",
+]
+
+[project.optional-dependencies]
+tui = [
+    "textual>=0.58.0,<2.0.0",
+]
+dev = [
+    "pytest>=9.0.3",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.0.0",
+    "build>=1.2.2",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+    "aiosqlite>=0.20.0",
+    "mutmut>=3.0.0",
+    "textual>=0.58.0,<2.0.0",
+    "stripe>=10.0.0",
+]
+
+[project.scripts]
+mutx = "cli.main:cli"
+mutx-reasoning-worker = "src.api.reasoning_worker:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cli*", "src*"]
+
+[tool.setuptools.package-data]
+cli = ["policies/*.fpl"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+
+[tool.mutmut]
+paths = ["tests", "cli"]
+exclude = ["tests/website.spec.ts", "tests/conftest.py"]
+
+[tool.coverage.run]
+source = ["src", "cli", "sdk"]
+omit = ["*/tests/*", "*/test_*.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "@abstractmethod",
+]
+precision = 2
+show_missing = true
+skip_covered = false
+fail_under = 70
+
+[tool.coverage.html]
+directory = "coverage_html"

@@ -1,0 +1,14 @@
+---
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Restart agent
+  ansible.builtin.systemd:
+    name: "{{ systemd_unit_name }}"
+    state: restarted
+
+- name: Stop agent
+  ansible.builtin.systemd:
+    name: "{{ systemd_unit_name }}"
+    state: stopped

@@ -1,0 +1,185 @@
+x-api-env: &api-env
+  ENVIRONMENT: production
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  DATABASE_URL: ${DATABASE_URL}
+  DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-require}
+  DATABASE_REQUIRED_ON_STARTUP: "true"
+  JWT_SECRET: ${JWT_SECRET}
+  SECRET_ENCRYPTION_KEY: ${SECRET_ENCRYPTION_KEY}
+  CORS_ORIGINS: ${CORS_ORIGINS:-https://mutx.dev,https://app.mutx.dev}
+  ENABLE_RAG_API: ${ENABLE_RAG_API:-false}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: mutx-postgres-prod
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-mutx}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-mutx}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mutx} -d ${POSTGRES_DB:-mutx} && PGPASSWORD=${POSTGRES_PASSWORD} psql -U ${POSTGRES_USER:-mutx} -d ${POSTGRES_DB:-mutx} -c 'SELECT 1'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - mutx-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: mutx-redis-prod
+    restart: unless-stopped
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --timeout 60
+      --tcp-keepalive 300
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - mutx-network
+
+  migrate:
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile.api.production
+    container_name: mutx-migrate-prod
+    restart: "no"
+    environment:
+      <<: *api-env
+      BACKGROUND_MONITOR_ENABLED: "false"
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - mutx-network
+
+  api:
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile.api.production
+    container_name: mutx-api-prod
+    restart: unless-stopped
+    environment:
+      <<: *api-env
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-1}
+      BACKGROUND_MONITOR_ENABLED: "false"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - mutx-network
+
+  monitor:
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile.api.production
+    container_name: mutx-monitor-prod
+    restart: unless-stopped
+    environment:
+      <<: *api-env
+      BACKGROUND_MONITOR_ENABLED: "true"
+    command: ["python", "-m", "src.api.monitor_worker"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+    networks:
+      - mutx-network
+
+  frontend:
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile.frontend
+      target: production
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-https://api.mutx.dev}
+        NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:-https://app.mutx.dev}
+    container_name: mutx-frontend-prod
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+      INTERNAL_API_URL: http://api:8000
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-https://api.mutx.dev}
+      NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:-https://app.mutx.dev}
+      NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${NEXT_PUBLIC_TURNSTILE_SITE_KEY:-}
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "require('http').get('http://127.0.0.1:3000', (res) => process.exit(res.statusCode < 500 ? 0 : 1)).on('error', () => process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - mutx-network
+
+  nginx:
+    image: nginx:alpine
+    container_name: mutx-nginx-prod
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.prod.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    depends_on:
+      api:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - mutx-network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  mutx-network:
+    driver: bridge
+    name: mutx_prod_network

@@ -1,0 +1,59 @@
+---
+- name: Create agent user
+  ansible.builtin.user:
+    name: "{{ agent_system_user }}"
+    comment: "mutx.dev Agent User"
+    system: true
+    create_home: true
+    home: "{{ agent_volume_path }}"
+    shell: /bin/false
+
+- name: Create agent volume directory
+  ansible.builtin.file:
+    path: "{{ agent_volume_path }}"
+    state: directory
+    owner: "{{ agent_system_user }}"
+    group: "{{ agent_system_user }}"
+    mode: '0750'
+
+- name: Create agent config directory
+  ansible.builtin.file:
+    path: /etc/{{ agent_name }}
+    state: directory
+    owner: root
+    group: "{{ agent_system_user }}"
+    mode: '0750'
+
+- name: Pull agent Docker image
+  community.docker.docker_image:
+    name: "{{ agent_image }}"
+    source: pull
+    force_source: true
+  register: agent_image_pull
+  notify: Restart agent
+
+- name: Create environment file
+  ansible.builtin.template:
+    src: env.j2
+    dest: "/etc/{{ agent_name }}/env"
+    owner: root
+    group: "{{ agent_system_user }}"
+    mode: '0640'
+  no_log: true
+  notify: Restart agent
+
+- name: Create systemd service file
+  ansible.builtin.template:
+    src: agent.service.j2
+    dest: "/etc/systemd/system/{{ systemd_unit_name }}.service"
+    mode: '0644'
+  notify:
+    - Reload systemd
+    - Restart agent
+
+- name: Start and enable agent service
+  ansible.builtin.systemd:
+    name: "{{ systemd_unit_name }}"
+    enabled: true
+    state: started
+    daemon_reload: true

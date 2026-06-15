@@ -1,0 +1,220 @@
+
+name: ${MUTX_COMPOSE_PROJECT:-mutx}
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-mutx}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      POSTGRES_DB: ${POSTGRES_DB:-mutx}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mutx"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - mutx-network
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - mutx-network
+
+  # Backend API
+  api:
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile.api
+      target: development
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-mutx}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-mutx}
+      DATABASE_SSL_MODE: disable
+      DATABASE_REQUIRED_ON_STARTUP: "true"
+      API_HOST: 0.0.0.0
+      API_PORT: 8000
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      REDIS_URL: redis://redis:6379/0
+      ENVIRONMENT: development
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-mutx-api}
+      OTEL_TRACES_EXPORTER: ${OTEL_TRACES_EXPORTER:-otlp}
+      OTEL_METRICS_EXPORTER: ${OTEL_METRICS_EXPORTER:-otlp}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../../src:/app/src
+      - ../../requirements.txt:/app/requirements.txt
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - mutx-network
+
+  migrate:
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile.api
+      target: development
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-mutx}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-mutx}
+      DATABASE_SSL_MODE: disable
+      DATABASE_REQUIRED_ON_STARTUP: "true"
+      BACKGROUND_MONITOR_ENABLED: "false"
+      ENVIRONMENT: development
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - mutx-network
+
+  # Frontend
+  frontend:
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile.frontend
+      target: development
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-mutx}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-mutx}
+      DATABASE_SSL_MODE: disable
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+      NEXT_PUBLIC_SITE_URL: http://localhost:3000
+      NODE_ENV: development
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+    ports:
+      - "3000:3000"
+    volumes:
+      - ../../:/app
+      - frontend_node_modules:/app/node_modules
+      - frontend_next:/app/.next
+    command: ["npm", "run", "dev", "--", "--hostname", "0.0.0.0", "--port", "3000"]
+    depends_on:
+      - api
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    networks:
+      - mutx-network
+
+  # ==============================================================================
+  # Observability Services (Jaeger, Grafana, Prometheus, OTEL Collector)
+  # ==============================================================================
+
+  # Jaeger Tracing
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+      - SPAN_STORAGE_TYPE=badger
+      - BADGER_EPHEMERAL=false
+      - BADGER_DIRECTORY_VALUE=/var/lib/jaeger/data
+      - BADGER_DIRECTORY_KEY=/var/lib/jaeger/index
+    ports:
+      - "16686:16686"     # Jaeger UI
+      - "6831:6831/udp"   # Jaeger agent thrift (compact)
+      - "14250:14250"     # Jaeger gRPC
+    volumes:
+      - jaeger_data:/var/lib/jaeger
+    networks:
+      - otel-network
+    restart: unless-stopped
+
+  # Prometheus Metrics
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - otel-network
+    restart: unless-stopped
+
+  # Grafana Dashboards
+  grafana:
+    image: grafana/grafana:11.2.2
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-mutx_admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    ports:
+      - "3001:3000"
+    volumes:
+      - ./grafana-provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    networks:
+      - otel-network
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  # OpenTelemetry Collector
+  otel-collector:
+    image: otel/opentelemetry-collector:0.102.1
+    command: ["--config=/etc/otelcol-contrib/otelcol-contrib.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otelcol-contrib/otelcol-contrib.yaml:ro
+    ports:
+      - "4317:4317"       # OTLP gRPC receiver
+      - "4318:4318"       # OTLP HTTP receiver
+      - "8888:8888"       # Prometheus metrics exposed by collector
+      - "8889:8889"       # Prometheus metrics exporter
+    networks:
+      - otel-network
+    depends_on:
+      - jaeger
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  frontend_node_modules:
+  frontend_next:
+  prometheus_data:
+  grafana_data:
+  jaeger_data:
+
+networks:
+  mutx-network:
+    driver: bridge
+
+  # Observability network for telemetry
+  otel-network:
+    driver: bridge

@@ -1,0 +1,76 @@
+import { NextRequest, NextResponse } from 'next/server'
+
+import {
+  applyAuthCookies,
+  authenticatedFetch,
+  getApiBaseUrl,
+  hasAuthSession,
+} from '@/app/api/_lib/controlPlane'
+import { validateRequest, schemas } from '@/app/api/_lib/validation'
+import { withErrorHandling, unauthorized } from '@/app/api/_lib/errors'
+
+
+export const dynamic = 'force-dynamic'
+
+/**
+ * Dashboard deployments endpoint.
+ * Ownership is enforced by the backend - it derives ownership from the auth token.
+ * No need to pass user_id or call /auth/me first.
+ */
+export async function GET(request: NextRequest): Promise<NextResponse> {
+  return withErrorHandling(async (_req: Request) => {
+    if (!hasAuthSession(request)) {
+      return unauthorized()
+    }
+
+    const { response, tokenRefreshed, refreshedTokens } = await authenticatedFetch(
+      request,
+      `${getApiBaseUrl()}/v1/deployments?limit=20`,
+      { cache: 'no-store' }
+    )
+
+    const payload = await response.json().catch(() => ({ detail: 'Failed to fetch deployments' }))
+    // Backend returns {items, total, skip, limit, has_more} envelope; pass only items to client
+    const items = Array.isArray(payload) ? payload : (payload.items ?? payload)
+    const nextResponse = NextResponse.json(items, { status: response.status })
+
+    if (tokenRefreshed && refreshedTokens) {
+      applyAuthCookies(nextResponse, request, refreshedTokens)
+    }
+
+    return nextResponse
+  })(request)
+}
+
+export async function POST(request: NextRequest): Promise<NextResponse> {
+  return withErrorHandling(async (req: Request) => {
+    if (!hasAuthSession(request)) {
+      return unauthorized()
+    }
+
+    const validation = await validateRequest(schemas.deploymentCreate, req)
+    if (!validation.success) {
+      return validation.response
+    }
+
+    const { response, tokenRefreshed, refreshedTokens } = await authenticatedFetch(
+      request,
+      `${getApiBaseUrl()}/v1/deployments`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(validation.data),
+        cache: 'no-store',
+      }
+    )
+
+    const payload = await response.json().catch(() => ({ detail: 'Failed to create deployment' }))
+    const nextResponse = NextResponse.json(payload, { status: response.status })
+
+    if (tokenRefreshed && refreshedTokens) {
+      applyAuthCookies(nextResponse, request, refreshedTokens)
+    }
+
+    return nextResponse
+  })(request)
+}
