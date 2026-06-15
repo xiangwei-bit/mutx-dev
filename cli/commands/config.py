@@ -1,6 +1,20 @@
+from __future__ import annotations
+
+from urllib.parse import urlparse
+
 import click
 
 from cli.config import current_config
+
+
+def _validate_api_url(value: str) -> None:
+    """Raise ``click.BadParameter`` when *value* is not a plausible URL."""
+    parsed = urlparse(value)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise click.BadParameter(
+            f"'{value}' is not a valid URL. Expected format: http(s)://host[:port]",
+            param_hint="'value'",
+        )
 
 
 @click.group(name="config")
@@ -24,14 +38,18 @@ def show_config():
 @click.argument("key")
 def get_config(key: str):
     """Get a specific config value"""
+    if not key or not key.strip():
+        raise click.UsageError("KEY must not be empty.")
+
     config = current_config()
     if key == "api_key":
         key = "access_token"
 
     valid_keys = ["api_url", "access_token", "refresh_token", "config_path"]
     if key not in valid_keys:
-        click.echo(f"Error: Invalid key '{key}'. Valid keys: {', '.join(valid_keys)}", err=True)
-        return
+        raise click.UsageError(
+            f"Invalid key '{key}'. Valid keys: {', '.join(valid_keys)}"
+        )
 
     if key == "config_path":
         click.echo(str(config.config_path))
@@ -48,22 +66,29 @@ def get_config(key: str):
 @click.argument("key")
 @click.argument("value", required=False)
 @click.option("--unset", is_flag=True, help="Unset a config value")
-def set_config(key: str, value: str, unset: bool):
+def set_config(key: str, value: str | None, unset: bool):
     """Set a config value"""
+    if not key or not key.strip():
+        raise click.UsageError("KEY must not be empty.")
+
     config = current_config()
 
     valid_keys = ["api_url"]
     if key not in valid_keys:
-        click.echo(f"Error: Invalid key '{key}'. Editable keys: {', '.join(valid_keys)}", err=True)
-        return
+        raise click.UsageError(
+            f"Invalid key '{key}'. Editable keys: {', '.join(valid_keys)}"
+        )
 
     if unset:
-        click.echo(f"Error: Cannot unset '{key}' via this command.", err=True)
-        return
+        raise click.UsageError(f"Cannot unset '{key}' via this command.")
+
+    if value is None or not value.strip():
+        raise click.UsageError("VALUE must not be empty.")
 
     if key == "api_url":
+        _validate_api_url(value)
         config.api_url = value
-        click.echo(f"API URL set to: {value}")
+        click.echo(f"API URL set to: {config.api_url}")
 
     config.save()
 
@@ -73,14 +98,18 @@ def set_config(key: str, value: str, unset: bool):
 @click.option("--force", "-f", is_flag=True, help="Skip confirmation prompt")
 def unset_config(key: str, force: bool):
     """Unset a config value"""
+    if not key or not key.strip():
+        raise click.UsageError("KEY must not be empty.")
+
     config = current_config()
     if key == "api_key":
         key = "access_token"
 
     valid_keys = ["access_token", "refresh_token"]
     if key not in valid_keys:
-        click.echo(f"Error: Invalid key '{key}'. Can only unset: {', '.join(valid_keys)}", err=True)
-        return
+        raise click.UsageError(
+            f"Invalid key '{key}'. Can only unset: {', '.join(valid_keys)}"
+        )
 
     if not force:
         if not click.confirm(f"Are you sure you want to unset {key}?"):

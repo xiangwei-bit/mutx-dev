@@ -55,10 +55,17 @@ def _auth_service() -> AuthService:
 @click.pass_context
 def login(ctx, email: str, password: str, api_url: str | None):
     """Login to mutx.dev"""
+    if not email or not email.strip():
+        click.echo("Error: Email must not be empty.", err=True)
+        return
+    if not password or not password.strip():
+        click.echo("Error: Password must not be empty.", err=True)
+        return
+
     try:
         config = ctx.obj["config"]
         _auth_service().login(
-            email=email,
+            email=email.strip(),
             password=password,
             api_url=resolve_hosted_api_url(config, api_url),
         )
@@ -70,14 +77,17 @@ def login(ctx, email: str, password: str, api_url: str | None):
 @cli.command(name="logout")
 def logout():
     """Logout from mutx.dev"""
-    if not _auth_service().logout():
-        click.echo("No local access token is stored.")
-        click.echo("Run 'mutx status' to inspect current CLI state.")
-        return
+    try:
+        if not _auth_service().logout():
+            click.echo("No local access token is stored.")
+            click.echo("Run 'mutx status' to inspect current CLI state.")
+            return
 
-    click.echo("Logged out successfully.")
-    click.echo("Local access and refresh tokens cleared.")
-    click.echo("Run 'mutx status' to confirm local auth state.")
+        click.echo("Logged out successfully.")
+        click.echo("Local access and refresh tokens cleared.")
+        click.echo("Run 'mutx status' to confirm local auth state.")
+    except CLIServiceError as exc:
+        _echo_service_error(exc)
 
 
 @cli.command(name="whoami")
@@ -97,12 +107,15 @@ def whoami():
 @cli.command(name="status")
 def status():
     """Show CLI status"""
-    cli_status = _auth_service().status()
-    click.echo(f"API URL: {cli_status.api_url}")
-    if cli_status.authenticated:
-        click.echo("Status: Logged in")
-    else:
-        click.echo("Status: Not logged in")
+    try:
+        cli_status = _auth_service().status()
+        click.echo(f"API URL: {cli_status.api_url}")
+        if cli_status.authenticated:
+            click.echo("Status: Logged in")
+        else:
+            click.echo("Status: Not logged in")
+    except CLIServiceError as exc:
+        _echo_service_error(exc)
 
 
 cli.add_command(agents_group)
