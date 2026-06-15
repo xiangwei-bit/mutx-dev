@@ -63,6 +63,42 @@ def test_installed_cli_entrypoint_exposes_setup_commands_without_repo_on_sys_pat
     assert result.returncode == 0
     assert "Guided assistant-first onboarding." in result.stdout
 
+    # Verify --version outputs the package metadata version in a real install.
+    metadata_version = subprocess.run(
+        [
+            str(python_bin),
+            "-c",
+            "import importlib.metadata as m; print(m.version('mutx-cli'))",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert metadata_version.returncode == 0
+    expected_version = metadata_version.stdout.strip()
+
+    version_result = subprocess.run(
+        [str(mutx_bin), "--version"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert version_result.returncode == 0
+    assert expected_version in version_result.stdout
+
+    # Verify --help advertises the --version option.
+    help_result = subprocess.run(
+        [str(mutx_bin), "--help"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert help_result.returncode == 0
+    assert "--version" in help_result.stdout
+
     worker_result = subprocess.run(
         [str(venv_dir / "bin" / "mutx-reasoning-worker")],
         cwd=tmp_path,

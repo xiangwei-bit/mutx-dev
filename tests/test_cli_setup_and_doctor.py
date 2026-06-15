@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from click.testing import CliRunner
 
+from cli import __version__
 from cli.config import CLIConfig
 from cli.config import HOSTED_API_URL
 from cli.main import cli
@@ -584,3 +585,21 @@ def test_cli_config_migrates_legacy_api_key(tmp_path: Path) -> None:
     stored = json.loads(config_path.read_text(encoding="utf-8"))
     assert stored["access_token"] == "legacy-access-token"
     assert "api_key" not in stored
+
+
+def test_cli_version_flag_outputs_version() -> None:
+    runner = CliRunner()
+    result = runner.invoke(cli, ["--version"])
+
+    assert result.exit_code == 0
+    assert "mutx" in result.output
+    assert __version__ in result.output
+
+
+def test_cli_help_includes_version_option() -> None:
+    runner = CliRunner()
+    result = runner.invoke(cli, ["--help"])
+
+    assert result.exit_code == 0
+    assert "--version" in result.output
+    assert "Show the version and exit." in result.output
