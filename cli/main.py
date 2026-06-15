@@ -32,7 +32,17 @@ from cli.services import AuthService, CLIServiceError
 @click.option("--api-url", default=None, help="API URL (overrides config)")
 @click.pass_context
 def cli(ctx, api_url):
-    """mutx.dev CLI - Deploy and manage agents"""
+    """mutx.dev CLI - Deploy and manage agents.
+
+    New here? Start with one of these:
+
+    \b
+      mutx setup hosted   Connect to the hosted control plane (default).
+      mutx setup local    Bring up the local Docker-backed stack.
+      mutx doctor         First stop when something looks wrong: checks API
+                          URL, auth, runtime, and document readiness.
+      mutx status         Quick look at the active API URL and login state.
+    """
     ctx.ensure_object(dict)
     config = CLIConfig()
     if api_url:
@@ -96,7 +106,10 @@ def whoami():
 
 @cli.command(name="status")
 def status():
-    """Show CLI status"""
+    """Show CLI status: active API URL and whether you are logged in.
+
+    For a fuller health check (runtime, gateway, documents) run `mutx doctor`.
+    """
     cli_status = _auth_service().status()
     click.echo(f"API URL: {cli_status.api_url}")
     if cli_status.authenticated:

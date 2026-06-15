@@ -584,3 +584,40 @@ def test_cli_config_migrates_legacy_api_key(tmp_path: Path) -> None:
     stored = json.loads(config_path.read_text(encoding="utf-8"))
     assert stored["access_token"] == "legacy-access-token"
     assert "api_key" not in stored
+
+
+def test_help_text_points_to_setup_doctor_and_status() -> None:
+    runner = CliRunner()
+
+    root = runner.invoke(cli, ["--help"])
+    assert root.exit_code == 0
+    # The getting-started block names each first-step command so `mutx --help`
+    # is enough to know what to run first.
+    assert "mutx setup hosted" in root.output
+    assert "mutx setup local" in root.output
+    assert "mutx doctor" in root.output
+    assert "mutx status" in root.output
+
+    doctor_help = runner.invoke(cli, ["doctor", "--help"])
+    assert doctor_help.exit_code == 0
+    # doctor previously had no help at all; it must now describe itself as the
+    # first troubleshooting step and cross-link setup/status.
+    assert "Diagnose your MUTX setup" in doctor_help.output
+    assert "mutx setup hosted" in doctor_help.output
+    assert "mutx status" in doctor_help.output
+
+    status_help = runner.invoke(cli, ["status", "--help"])
+    assert status_help.exit_code == 0
+    assert "mutx doctor" in status_help.output
+
+    setup_help = runner.invoke(cli, ["setup", "--help"])
+    assert setup_help.exit_code == 0
+    assert "Guided assistant-first onboarding." in setup_help.output
+
+    hosted_help = runner.invoke(cli, ["setup", "hosted", "--help"])
+    assert hosted_help.exit_code == 0
+    assert "hosted control plane" in hosted_help.output
+
+    local_help = runner.invoke(cli, ["setup", "local", "--help"])
+    assert local_help.exit_code == 0
+    assert "local Docker-backed" in local_help.output

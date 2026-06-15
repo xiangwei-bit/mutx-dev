@@ -30,7 +30,8 @@ Hosted is the default. For the local Docker stack:
 
 ```bash
 mutx setup local    # Docker-backed
-mutx doctor         # Verify everything's wired
+mutx doctor         # First stop if anything looks wrong
+mutx status         # Quick API URL + login check
 ```
 
 ## Development

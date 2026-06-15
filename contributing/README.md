@@ -15,7 +15,17 @@ Thanks for helping improve `mutx.dev`.
 
 ## Local Setup
 
-Use the canonical quickstart in `docs/deployment/quickstart.md`.
+Use the canonical quickstart in `docs/deployment/quickstart.md`:
+
+* `mutx setup hosted` — connect to the hosted control plane (default).
+* `mutx setup local` — bring up the local Docker-backed stack.
+
+### Verify And Troubleshoot
+
+When something looks wrong, start here before digging into logs:
+
+* `mutx doctor` — first stop: checks API URL, auth, runtime, and document readiness.
+* `mutx status` — quick check of the active API URL and login state.
 
 ## What To Work On
 

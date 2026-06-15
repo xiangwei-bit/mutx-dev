@@ -19,7 +19,15 @@ from cli.setup_wizard import mark_auth_completed, run_openclaw_setup_wizard
 
 @click.group(name="setup")
 def setup_group():
-    """Guided assistant-first onboarding."""
+    """Guided assistant-first onboarding.
+
+    Pick a control plane, then verify it:
+
+    \b
+      mutx setup hosted   Managed control plane (recommended default).
+      mutx setup local    Local Docker-backed stack for offline dev.
+      mutx doctor         Confirm everything is wired after setup.
+    """
     pass
 
 
@@ -294,6 +302,12 @@ def setup_hosted(
     open_tui: bool,
     no_input: bool,
 ):
+    """Set up MUTX against the hosted control plane (recommended default).
+
+    Logs in (or registers with --register), provisions the starter Personal
+    Assistant, and tracks your local OpenClaw runtime. Run `mutx doctor`
+    afterward to confirm health, or `mutx status` for a quick summary.
+    """
     config = current_config()
     target_api_url = resolve_hosted_api_url(config, api_url)
     config.api_url = target_api_url
@@ -394,6 +408,12 @@ def setup_local(
     open_tui: bool,
     no_input: bool,
 ):
+    """Set up MUTX against the local Docker-backed control plane.
+
+    Boots the localhost stack, bootstraps a local operator, and provisions the
+    starter Personal Assistant. Use this for offline or fully local
+    development; run `mutx doctor` afterward to confirm health.
+    """
     current_config().api_url = LOCAL_API_URL
 
     try:

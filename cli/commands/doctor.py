@@ -17,6 +17,14 @@ except Exception:  # noqa: BLE001
 @click.command(name="doctor")
 @click.option("--output", type=click.Choice(["table", "json"]), default="table")
 def doctor_command(output: str):
+    """Diagnose your MUTX setup: run this first when something looks wrong.
+
+    Reports the active API URL and source, authentication state, control-plane
+    health, OpenClaw runtime/registry status, and document-engine readiness.
+
+    Haven't set up a control plane yet? Run `mutx setup hosted` (default) or
+    `mutx setup local`. For a quick auth/API summary use `mutx status`.
+    """
     config = current_config()
     auth = AuthService(config=config)
     assistant_service = AssistantService(config=config)
