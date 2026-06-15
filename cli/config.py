@@ -1,5 +1,6 @@
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
@@ -8,6 +9,14 @@ import httpx
 
 LOCAL_API_URL = "http://localhost:8000"
 HOSTED_API_URL = "https://api.mutx.dev"
+
+_CONFIG_STATE_LABELS = {
+    "loaded": "loaded from file",
+    "missing": "no config file found (using defaults)",
+    "invalid_json": "config file ignored: invalid JSON (using defaults)",
+    "unreadable": "config file ignored: unreadable (using defaults)",
+    "invalid_shape": "config file ignored: not a JSON object (using defaults)",
+}
 
 
 def _normalize_api_url(value: str | None) -> str | None:
@@ -19,12 +28,40 @@ def _normalize_api_url(value: str | None) -> str | None:
     return normalized or None
 
 
+@dataclass(frozen=True)
+class ConfigLoadStatus:
+    """Diagnostic describing how the local config file was loaded.
+
+    ``detail`` only ever contains parser/IO summaries (never file contents),
+    so it is safe to surface in ``config show`` / ``doctor`` output.
+    """
+
+    state: str
+    path: str
+    detail: Optional[str] = None
+
+    @property
+    def ok(self) -> bool:
+        return self.state in ("loaded", "missing")
+
+    @property
+    def has_issue(self) -> bool:
+        return self.state in ("invalid_json", "unreadable", "invalid_shape")
+
+    def describe(self) -> str:
+        return _CONFIG_STATE_LABELS.get(self.state, self.state)
+
+    def to_payload(self) -> dict[str, Optional[str]]:
+        return {"state": self.state, "path": self.path, "detail": self.detail}
+
+
 class CLIConfig:
     def __init__(self, config_path: Optional[Path] = None):
         if config_path is None:
             config_path = Path.home() / ".mutx" / "config.json"
         self.config_path = config_path
         self._runtime_api_url_override = _normalize_api_url(os.getenv("MUTX_API_URL"))
+        self._load_status = ConfigLoadStatus(state="missing", path=str(config_path))
         self._config = self._load()
 
     def _default_config(self) -> dict[str, Any]:
@@ -43,15 +80,36 @@ class CLIConfig:
     def _load(self) -> dict[str, Any]:
         payload: dict[str, Any] = self._default_config()
         migrated = False
+        path_str = str(self.config_path)
 
         if self.config_path.exists():
             try:
                 with open(self.config_path, encoding="utf-8") as handle:
                     loaded = json.load(handle)
+            except json.JSONDecodeError as exc:
+                self._load_status = ConfigLoadStatus(
+                    state="invalid_json",
+                    path=path_str,
+                    detail=f"Invalid JSON at line {exc.lineno}, column {exc.colno}: {exc.msg}",
+                )
+            except OSError as exc:
+                self._load_status = ConfigLoadStatus(
+                    state="unreadable",
+                    path=path_str,
+                    detail=exc.strerror or "could not read configuration file",
+                )
+            else:
                 if isinstance(loaded, dict):
                     payload.update(loaded)
-            except (json.JSONDecodeError, IOError):
-                pass
+                    self._load_status = ConfigLoadStatus(state="loaded", path=path_str)
+                else:
+                    self._load_status = ConfigLoadStatus(
+                        state="invalid_shape",
+                        path=path_str,
+                        detail=f"Expected a JSON object but found {type(loaded).__name__}",
+                    )
+        else:
+            self._load_status = ConfigLoadStatus(state="missing", path=path_str)
 
         if payload.get("api_key") and not payload.get("access_token"):
             payload["access_token"] = payload.get("api_key")
@@ -69,6 +127,10 @@ class CLIConfig:
             self.save()
 
         return payload
+
+    @property
+    def load_status(self) -> ConfigLoadStatus:
+        return self._load_status
 
     def save(self):
         self.config_path.parent.mkdir(parents=True, exist_ok=True)

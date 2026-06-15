@@ -360,6 +360,11 @@ def test_doctor_json_reports_assistant_state(monkeypatch, tmp_path: Path) -> Non
         "api_url": "https://override.example.com",
         "api_url_source": "flag",
         "config_path": str(config.config_path),
+        "config_source": {
+            "state": "missing",
+            "path": str(config.config_path),
+            "detail": None,
+        },
         "authenticated": True,
         "api_health": "healthy",
         "openclaw": {
