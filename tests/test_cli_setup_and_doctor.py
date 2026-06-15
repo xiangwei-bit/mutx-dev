@@ -584,3 +584,24 @@ def test_cli_config_migrates_legacy_api_key(tmp_path: Path) -> None:
     stored = json.loads(config_path.read_text(encoding="utf-8"))
     assert stored["access_token"] == "legacy-access-token"
     assert "api_key" not in stored
+
+
+def test_cli_version_matches_package_metadata() -> None:
+    from cli import __version__
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["--version"])
+
+    assert result.exit_code == 0
+    assert "mutx" in result.output
+    assert __version__ in result.output
+
+
+def test_cli_help_keeps_core_commands_and_advertises_version_flag() -> None:
+    runner = CliRunner()
+    result = runner.invoke(cli, ["--help"])
+
+    assert result.exit_code == 0
+    assert "--version" in result.output
+    for command in ("doctor", "status", "setup"):
+        assert command in result.output

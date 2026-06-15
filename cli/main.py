@@ -1,5 +1,6 @@
 import click
 
+from cli import __version__
 from cli.config import CLIConfig, get_client, resolve_hosted_api_url
 from cli.commands.agent import agent_group
 from cli.commands.assistant import assistant_group
@@ -29,6 +30,7 @@ from cli.services import AuthService, CLIServiceError
 
 
 @click.group()
+@click.version_option(version=__version__, prog_name="mutx")
 @click.option("--api-url", default=None, help="API URL (overrides config)")
 @click.pass_context
 def cli(ctx, api_url):
