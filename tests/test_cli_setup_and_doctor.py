@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from click.testing import CliRunner
 
+from cli import __version__ as cli_version
 from cli.config import CLIConfig
 from cli.config import HOSTED_API_URL
 from cli.main import cli
@@ -357,6 +358,7 @@ def test_doctor_json_reports_assistant_state(monkeypatch, tmp_path: Path) -> Non
     assert result.exit_code == 0
     payload = json.loads(result.output)
     assert payload == {
+        "version": cli_version,
         "api_url": "https://override.example.com",
         "api_url_source": "flag",
         "config_path": str(config.config_path),
@@ -584,3 +586,223 @@ def test_cli_config_migrates_legacy_api_key(tmp_path: Path) -> None:
     stored = json.loads(config_path.read_text(encoding="utf-8"))
     assert stored["access_token"] == "legacy-access-token"
     assert "api_key" not in stored
+
+
+# ---------------------------------------------------------------------------
+# Doctor diagnostic summary tests
+# ---------------------------------------------------------------------------
+
+
+def _patch_doctor_defaults(monkeypatch, config: CLIConfig, *, authenticated: bool = False) -> None:
+    """Apply shared monkeypatches for doctor command tests.
+
+    Sets up all external dependencies (auth, gateway health, runtime snapshot,
+    document engine, and HTTP health check) with deterministic stubs.  When
+    *authenticated* is ``True`` the stubs report a logged-in user with an
+    assistant overview; otherwise they report an unauthenticated state.
+    """
+
+    class DummyAuth:
+        def __init__(self, config: CLIConfig):
+            self.config = config
+
+        def status(self):
+            return SimpleNamespace(authenticated=authenticated)
+
+        def whoami(self):
+            if authenticated:
+                return SimpleNamespace(email="operator@example.com", name="Operator", plan="pro")
+            return None
+
+    class DummyAssistant:
+        def __init__(self, config: CLIConfig):
+            self.config = config
+
+        def overview(self):
+            if not authenticated:
+                return None
+            return SimpleNamespace(
+                name="Personal Assistant",
+                status="running",
+                onboarding_status="completed",
+                assistant_id="personal-assistant",
+                workspace="/tmp/openclaw/workspace-personal-assistant",
+                session_count=2,
+                gateway=SimpleNamespace(status="healthy"),
+            )
+
+    monkeypatch.setattr("cli.main.CLIConfig", lambda: config)
+    monkeypatch.setattr("cli.commands.doctor.AuthService", DummyAuth)
+    monkeypatch.setattr("cli.commands.doctor.AssistantService", DummyAssistant)
+    monkeypatch.setattr(
+        "cli.commands.doctor.prepare_runtime_state_sync",
+        lambda *args, **kwargs: {
+            "status": "healthy",
+            "last_seen_at": "2026-03-21T10:00:00+00:00",
+            "last_synced_at": "2026-03-21T10:00:30+00:00",
+        },
+    )
+    monkeypatch.setattr(
+        "cli.commands.doctor.get_gateway_health",
+        lambda: SimpleNamespace(
+            to_payload=lambda: {
+                "status": "healthy" if authenticated else "missing",
+                "cli_available": authenticated,
+                "installed": authenticated,
+                "onboarded": authenticated,
+                "gateway_configured": authenticated,
+                "gateway_reachable": authenticated,
+                "gateway_port": 18789 if authenticated else None,
+                "gateway_url": "http://127.0.0.1:18789" if authenticated else None,
+                "credential_detected": authenticated,
+                "config_path": "/tmp/openclaw.json" if authenticated else None,
+                "state_dir": "/tmp/.openclaw" if authenticated else None,
+                "doctor_summary": (
+                    "Gateway is reachable and ready for assistant operations."
+                    if authenticated
+                    else "OpenClaw is not installed."
+                ),
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        "cli.commands.doctor.collect_openclaw_runtime_snapshot",
+        lambda: SimpleNamespace(
+            to_payload=lambda: {
+                "provider": "openclaw",
+                "binding_count": 1 if authenticated else 0,
+                "home_path": "/tmp/.openclaw" if authenticated else None,
+                "last_seen_at": "2026-03-21T10:00:00+00:00" if authenticated else None,
+                "binary_path": "/opt/homebrew/bin/openclaw" if authenticated else None,
+                "privacy_summary": "MUTX tracks your local OpenClaw runtime.",
+                "adopted_existing_runtime": False,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        "cli.commands.doctor.get_document_engine_readiness",
+        lambda: SimpleNamespace(
+            to_payload=lambda: {
+                "enabled": False,
+                "python_ok": True,
+                "predict_rlm_available": False,
+                "deno_available": False,
+                "credentials_ok": False,
+                "ready": False,
+                "driver": "builtin_fallback",
+                "artifacts_dir": "/tmp/.mutx-artifacts",
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        "cli.commands.doctor.httpx.get",
+        lambda url, timeout=2.0: DummyResponse(
+            200, {"status": "healthy"} if authenticated else {"status": "error"}
+        ),
+    )
+
+
+def test_doctor_summary_unauthenticated(monkeypatch, tmp_path: Path) -> None:
+    """Summary output should show 'no' for auth and omit user/assistant details."""
+    config = CLIConfig(config_path=tmp_path / "config.json")
+    config.api_url = "https://api.mutx.dev"
+    _patch_doctor_defaults(monkeypatch, config, authenticated=False)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["doctor", "--output", "summary"])
+
+    assert result.exit_code == 0
+    lines = result.output.strip().splitlines()
+    summary = {}
+    for line in lines:
+        # Format: "key  value" (two-space separator after padded key)
+        key, _, value = line.partition("  ")
+        summary[key.strip()] = value.strip()
+
+    assert summary["version"] == cli_version
+    assert summary["authenticated"] == "no"
+    assert summary["api_url"] == "https://api.mutx.dev"
+    assert summary["api_url_source"] == "config"
+    assert summary["openclaw_status"] == "missing"
+    assert summary["documents_enabled"] == "no"
+    assert summary["documents_ready"] == "no"
+
+    # Ensure no sensitive tokens appear anywhere
+    assert "access-token" not in result.output.lower()
+    assert "refresh-token" not in result.output.lower()
+    assert "bearer" not in result.output.lower()
+
+
+def test_doctor_summary_local_config(monkeypatch, tmp_path: Path) -> None:
+    """Summary should reflect local API URL source and default localhost URL."""
+    config = CLIConfig(config_path=tmp_path / "config.json")
+    # Default config uses LOCAL_API_URL
+    _patch_doctor_defaults(monkeypatch, config, authenticated=False)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["doctor", "--output", "summary"])
+
+    assert result.exit_code == 0
+    lines = result.output.strip().splitlines()
+    summary = {}
+    for line in lines:
+        key, _, value = line.partition("  ")
+        summary[key.strip()] = value.strip()
+
+    assert summary["api_url"] == "http://localhost:8000"
+    assert summary["api_url_source"] == "config"
+    assert summary["authenticated"] == "no"
+
+
+def test_doctor_json_unauthenticated(monkeypatch, tmp_path: Path) -> None:
+    """JSON output should include version and report authenticated=false when logged out."""
+    config = CLIConfig(config_path=tmp_path / "config.json")
+    config.api_url = "http://localhost:8000"
+    _patch_doctor_defaults(monkeypatch, config, authenticated=False)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["doctor", "--output", "json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["version"] == cli_version
+    assert payload["authenticated"] is False
+    assert payload["user"] is None
+    assert payload["assistant"] is None
+    assert payload["api_url"] == "http://localhost:8000"
+    assert payload["api_url_source"] == "config"
+    assert payload["openclaw"]["status"] == "missing"
+
+    # Ensure no sensitive tokens in JSON output
+    assert "access_token" not in result.output
+    assert "refresh_token" not in result.output
+
+
+def test_doctor_summary_no_token_leak(monkeypatch, tmp_path: Path) -> None:
+    """Even when authenticated, tokens must never appear in summary or table output."""
+    config = CLIConfig(config_path=tmp_path / "config.json")
+    config.api_url = "https://control.example.com"
+    config.access_token = "super-secret-access-token-xyz"
+    config.refresh_token = "super-secret-refresh-token-abc"
+    _patch_doctor_defaults(monkeypatch, config, authenticated=True)
+
+    runner = CliRunner()
+
+    for output_format in ("summary", "table", "json"):
+        result = runner.invoke(cli, ["doctor", "--output", output_format])
+        assert result.exit_code == 0
+        assert "super-secret-access-token-xyz" not in result.output
+        assert "super-secret-refresh-token-abc" not in result.output
+
+
+def test_doctor_table_includes_version_header(monkeypatch, tmp_path: Path) -> None:
+    """Table output should start with the 'mutx <version>' header line."""
+    config = CLIConfig(config_path=tmp_path / "config.json")
+    _patch_doctor_defaults(monkeypatch, config, authenticated=False)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["doctor"])
+
+    assert result.exit_code == 0
+    first_line = result.output.strip().splitlines()[0]
+    assert first_line == f"mutx {cli_version}"

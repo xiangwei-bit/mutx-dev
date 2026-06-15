@@ -3,6 +3,7 @@ import json
 import click
 import httpx
 
+from cli import __version__ as cli_version
 from cli.config import current_config
 from cli.openclaw_runtime import collect_openclaw_runtime_snapshot, get_gateway_health
 from cli.services import AssistantService, AuthService, CLIServiceError, RuntimeStateService
@@ -14,8 +15,40 @@ except Exception:  # noqa: BLE001
     get_document_engine_readiness = None
 
 
+def _build_summary(payload: dict[str, object]) -> dict[str, str]:
+    """Derive a lightweight, script-friendly diagnostic summary from the full payload.
+
+    The summary contains only non-sensitive, high-level status fields so that
+    shell pipelines and CI checks can consume it without risk of leaking tokens.
+    """
+    openclaw = payload.get("openclaw") or {}
+    documents = payload.get("documents") or {}
+    runtime = payload.get("runtime_snapshot") or {}
+
+    return {
+        "version": str(payload.get("version") or cli_version),
+        "config_path": str(payload.get("config_path") or ""),
+        "api_url": str(payload.get("api_url") or ""),
+        "api_url_source": str(payload.get("api_url_source") or ""),
+        "authenticated": "yes" if payload.get("authenticated") else "no",
+        "api_health": str(payload.get("api_health") or "unknown"),
+        "openclaw_status": str(openclaw.get("status") or "unknown"),
+        "openclaw_gateway": str(openclaw.get("gateway_url") or "n/a"),
+        "runtime_bindings": str(runtime.get("binding_count", 0)),
+        "documents_enabled": "yes" if documents.get("enabled") else "no",
+        "documents_ready": "yes" if documents.get("ready") else "no",
+    }
+
+
+def _render_summary(summary: dict[str, str]) -> None:
+    """Print the summary as aligned ``key: value`` lines for easy grep/awk consumption."""
+    width = max(len(key) for key in summary)
+    for key, value in summary.items():
+        click.echo(f"{key:<{width}}  {value}")
+
+
 @click.command(name="doctor")
-@click.option("--output", type=click.Choice(["table", "json"]), default="table")
+@click.option("--output", type=click.Choice(["table", "json", "summary"]), default="table")
 def doctor_command(output: str):
     config = current_config()
     auth = AuthService(config=config)
@@ -23,6 +56,7 @@ def doctor_command(output: str):
     runtime_service = RuntimeStateService(config=config)
 
     payload: dict[str, object] = {
+        "version": str(cli_version),
         "api_url": config.api_url,
         "api_url_source": config.api_url_source,
         "config_path": str(config.config_path),
@@ -90,6 +124,13 @@ def doctor_command(output: str):
         click.echo(json.dumps(payload, indent=2))
         return
 
+    summary = _build_summary(payload)
+
+    if output == "summary":
+        _render_summary(summary)
+        return
+
+    click.echo(f"mutx {summary['version']}")
     click.echo(f"API URL: {payload['api_url']} ({payload['api_url_source']})")
     click.echo(f"Config Path: {payload['config_path']}")
     click.echo(f"Authenticated: {'yes' if payload['authenticated'] else 'no'}")
