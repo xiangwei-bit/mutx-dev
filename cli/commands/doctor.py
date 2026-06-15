@@ -3,6 +3,7 @@ import json
 import click
 import httpx
 
+from cli import __version__
 from cli.config import current_config
 from cli.openclaw_runtime import collect_openclaw_runtime_snapshot, get_gateway_health
 from cli.services import AssistantService, AuthService, CLIServiceError, RuntimeStateService
@@ -56,6 +57,16 @@ def doctor_command(output: str):
         "assistant": None,
     }
 
+    payload["summary"] = {
+        "version": __version__,
+        "config_path": str(config.config_path),
+        "api_url": config.api_url,
+        "api_url_source": config.api_url_source,
+        "authenticated": payload["authenticated"],
+        "openclaw_status": payload["openclaw"]["status"],
+        "documents_ready": payload["documents"]["ready"],
+    }
+
     try:
         response = httpx.get(f"{config.api_url}/health", timeout=2.0)
         payload["api_health"] = (
@@ -90,6 +101,15 @@ def doctor_command(output: str):
         click.echo(json.dumps(payload, indent=2))
         return
 
+    click.echo(
+        "Summary: "
+        f"mutx v{payload['summary']['version']} | "
+        f"config={payload['summary']['config_path']} | "
+        f"api={payload['summary']['api_url']} ({payload['summary']['api_url_source']}) | "
+        f"auth={'yes' if payload['summary']['authenticated'] else 'no'} | "
+        f"openclaw={payload['summary']['openclaw_status']} | "
+        f"docs_ready={'yes' if payload['summary']['documents_ready'] else 'no'}"
+    )
     click.echo(f"API URL: {payload['api_url']} ({payload['api_url_source']})")
     click.echo(f"Config Path: {payload['config_path']}")
     click.echo(f"Authenticated: {'yes' if payload['authenticated'] else 'no'}")

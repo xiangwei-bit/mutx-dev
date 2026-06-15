@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from click.testing import CliRunner
 
+from cli import __version__
 from cli.config import CLIConfig
 from cli.config import HOSTED_API_URL
 from cli.main import cli
@@ -405,6 +406,226 @@ def test_doctor_json_reports_assistant_state(monkeypatch, tmp_path: Path) -> Non
             "session_count": 2,
             "gateway_status": "healthy",
         },
+        "summary": {
+            "version": __version__,
+            "config_path": str(config.config_path),
+            "api_url": "https://override.example.com",
+            "api_url_source": "flag",
+            "authenticated": True,
+            "openclaw_status": "healthy",
+            "documents_ready": False,
+        },
+    }
+
+
+def test_doctor_summary_reports_not_logged_in(monkeypatch, tmp_path: Path) -> None:
+    config = CLIConfig(config_path=tmp_path / "config.json")
+    captured: dict[str, object] = {}
+
+    class DummyAuth:
+        def __init__(self, config: CLIConfig):
+            self.config = config
+
+        def status(self):
+            return SimpleNamespace(authenticated=False)
+
+    class DummyAssistant:
+        def __init__(self, config: CLIConfig):
+            self.config = config
+
+        def overview(self):
+            raise AssertionError("overview() must not be called when not authenticated")
+
+    def fake_prepare(runtime_service, *, install_method):
+        captured["runtime_service"] = runtime_service
+        captured["install_method"] = install_method
+        return {}
+
+    monkeypatch.setattr("cli.main.CLIConfig", lambda: config)
+    monkeypatch.setattr("cli.commands.doctor.AuthService", DummyAuth)
+    monkeypatch.setattr("cli.commands.doctor.AssistantService", DummyAssistant)
+    monkeypatch.setattr("cli.commands.doctor.prepare_runtime_state_sync", fake_prepare)
+    monkeypatch.setattr(
+        "cli.commands.doctor.get_gateway_health",
+        lambda: SimpleNamespace(to_payload=lambda: {"status": "missing"}),
+    )
+    monkeypatch.setattr(
+        "cli.commands.doctor.collect_openclaw_runtime_snapshot",
+        lambda: SimpleNamespace(to_payload=lambda: {"binding_count": 0}),
+    )
+    monkeypatch.setattr(
+        "cli.commands.doctor.get_document_engine_readiness",
+        lambda: SimpleNamespace(to_payload=lambda: {"ready": False}),
+    )
+    monkeypatch.setattr(
+        "cli.commands.doctor.httpx.get",
+        lambda url, timeout=2.0: DummyResponse(200, {"status": "healthy"}),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["doctor", "--output", "json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["authenticated"] is False
+    assert payload["user"] is None
+    assert payload["assistant"] is None
+    assert payload["summary"] == {
+        "version": __version__,
+        "config_path": str(config.config_path),
+        "api_url": "http://localhost:8000",
+        "api_url_source": "config",
+        "authenticated": False,
+        "openclaw_status": "missing",
+        "documents_ready": False,
+    }
+    assert captured["runtime_service"] is None
+
+
+def test_doctor_summary_table_reports_local_config(monkeypatch, tmp_path: Path) -> None:
+    config = CLIConfig(config_path=tmp_path / "config.json")
+
+    class DummyAuth:
+        def __init__(self, config: CLIConfig):
+            self.config = config
+
+        def status(self):
+            return SimpleNamespace(authenticated=False)
+
+    class DummyAssistant:
+        def __init__(self, config: CLIConfig):
+            self.config = config
+
+        def overview(self):
+            return None
+
+    monkeypatch.setattr("cli.main.CLIConfig", lambda: config)
+    monkeypatch.setattr("cli.commands.doctor.AuthService", DummyAuth)
+    monkeypatch.setattr("cli.commands.doctor.AssistantService", DummyAssistant)
+    monkeypatch.setattr(
+        "cli.commands.doctor.prepare_runtime_state_sync", lambda *args, **kwargs: {}
+    )
+    monkeypatch.setattr(
+        "cli.commands.doctor.get_gateway_health",
+        lambda: SimpleNamespace(
+            to_payload=lambda: {
+                "status": "needs_onboard",
+                "gateway_url": None,
+                "onboarded": False,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        "cli.commands.doctor.collect_openclaw_runtime_snapshot",
+        lambda: SimpleNamespace(
+            to_payload=lambda: {
+                "binding_count": 0,
+                "binary_path": None,
+                "home_path": "/tmp/.openclaw",
+                "last_seen_at": None,
+                "adopted_existing_runtime": False,
+                "privacy_summary": "Local-only runtime tracking.",
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        "cli.commands.doctor.get_document_engine_readiness",
+        lambda: SimpleNamespace(
+            to_payload=lambda: {
+                "enabled": False,
+                "ready": False,
+                "driver": "unavailable",
+                "deno_available": False,
+                "predict_rlm_available": False,
+                "credentials_ok": False,
+                "missing_requirements": [],
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        "cli.commands.doctor.httpx.get",
+        lambda url, timeout=2.0: DummyResponse(200, {"status": "healthy"}),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["doctor"])
+
+    assert result.exit_code == 0
+    lines = result.output.splitlines()
+    summary_line = next(line for line in lines if line.startswith("Summary:"))
+    assert f"mutx v{__version__}" in summary_line
+    assert f"config={config.config_path}" in summary_line
+    assert "api=http://localhost:8000 (config)" in summary_line
+    assert "auth=no" in summary_line
+    assert "openclaw=needs_onboard" in summary_line
+    assert "docs_ready=no" in summary_line
+    # Existing table output remains intact (non-breaking change).
+    assert any(line.startswith("API URL:") for line in lines)
+    assert any(line.startswith("Config Path:") for line in lines)
+
+
+def test_doctor_summary_json_excludes_tokens(monkeypatch, tmp_path: Path) -> None:
+    config = CLIConfig(config_path=tmp_path / "config.json")
+    config.access_token = "super-secret-access-token"
+    config.refresh_token = "super-secret-refresh-token"
+
+    class DummyAuth:
+        def __init__(self, config: CLIConfig):
+            self.config = config
+
+        def status(self):
+            return SimpleNamespace(authenticated=True)
+
+        def whoami(self):
+            return SimpleNamespace(email="operator@example.com", name="Operator", plan="pro")
+
+    class DummyAssistant:
+        def __init__(self, config: CLIConfig):
+            self.config = config
+
+        def overview(self):
+            return None
+
+    monkeypatch.setattr("cli.main.CLIConfig", lambda: config)
+    monkeypatch.setattr("cli.commands.doctor.AuthService", DummyAuth)
+    monkeypatch.setattr("cli.commands.doctor.AssistantService", DummyAssistant)
+    monkeypatch.setattr(
+        "cli.commands.doctor.prepare_runtime_state_sync", lambda *args, **kwargs: {}
+    )
+    monkeypatch.setattr(
+        "cli.commands.doctor.get_gateway_health",
+        lambda: SimpleNamespace(
+            to_payload=lambda: {"status": "healthy", "credential_detected": True}
+        ),
+    )
+    monkeypatch.setattr(
+        "cli.commands.doctor.collect_openclaw_runtime_snapshot",
+        lambda: SimpleNamespace(to_payload=lambda: {"binding_count": 1}),
+    )
+    monkeypatch.setattr(
+        "cli.commands.doctor.get_document_engine_readiness",
+        lambda: SimpleNamespace(to_payload=lambda: {"ready": True}),
+    )
+    monkeypatch.setattr(
+        "cli.commands.doctor.httpx.get",
+        lambda url, timeout=2.0: DummyResponse(200, {"status": "healthy"}),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["doctor", "--output", "json"])
+
+    assert result.exit_code == 0
+    assert "super-secret-access-token" not in result.output
+    assert "super-secret-refresh-token" not in result.output
+    payload = json.loads(result.output)
+    assert payload["summary"] == {
+        "version": __version__,
+        "config_path": str(config.config_path),
+        "api_url": "http://localhost:8000",
+        "api_url_source": "config",
+        "authenticated": True,
+        "openclaw_status": "healthy",
+        "documents_ready": True,
     }
 
 
