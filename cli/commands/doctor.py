@@ -17,6 +17,20 @@ except Exception:  # noqa: BLE001
 @click.command(name="doctor")
 @click.option("--output", type=click.Choice(["table", "json"]), default="table")
 def doctor_command(output: str):
+    """Diagnose config, connectivity, and runtime health.
+
+    \b
+    Checks:
+      - API URL reachability and health
+      - Authentication state
+      - OpenClaw gateway and runtime snapshot
+      - Document engine readiness (predict-rlm, deno, credentials)
+      - Assistant and deployment state (when authenticated)
+
+    Use --output json for machine-readable output in CI or scripts.
+    Run this after `mutx setup` to confirm everything is wired correctly,
+    or when commands fail with unexpected errors.
+    """
     config = current_config()
     auth = AuthService(config=config)
     assistant_service = AssistantService(config=config)

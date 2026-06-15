@@ -17,6 +17,22 @@ Thanks for helping improve `mutx.dev`.
 
 Use the canonical quickstart in `docs/deployment/quickstart.md`.
 
+### CLI setup and diagnostics
+
+When working on the CLI or debugging local environments, these commands cover
+the most common first-run and troubleshooting scenarios:
+
+```bash
+mutx setup hosted         # Connect to the hosted control plane (fastest path)
+mutx setup local          # Bootstrap a local Docker-backed control plane
+mutx status               # Show which API URL and auth state the CLI sees
+mutx doctor               # Full health check: API, OpenClaw, documents, assistant
+mutx runtime list         # List tracked local provider runtimes
+mutx onboard              # Guided flow for account, assistant, and TUI launch
+```
+
+Run `mutx doctor` after any setup change to confirm the environment is healthy.
+
 ## What To Work On
 
 The best starting points live in:

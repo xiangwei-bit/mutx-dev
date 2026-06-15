@@ -19,7 +19,15 @@ from cli.setup_wizard import mark_auth_completed, run_openclaw_setup_wizard
 
 @click.group(name="setup")
 def setup_group():
-    """Guided assistant-first onboarding."""
+    """Guided assistant-first onboarding.
+
+    \b
+    Choose a setup path:
+      mutx setup hosted    Connect to the hosted control plane (api.mutx.dev)
+      mutx setup local     Bootstrap a local Docker-backed control plane
+
+    Run `mutx doctor` after setup to verify your environment.
+    """
     pass
 
 
@@ -294,6 +302,16 @@ def setup_hosted(
     open_tui: bool,
     no_input: bool,
 ):
+    """Connect to the hosted MUTX control plane (api.mutx.dev).
+
+    \b
+    Use this when:
+      - You want the fastest path to a working assistant (no Docker required)
+      - You already have a MUTX account or want to create one
+      - You want to use the hosted API for remote agent deployments
+
+    After setup, run `mutx doctor` to verify everything is wired correctly.
+    """
     config = current_config()
     target_api_url = resolve_hosted_api_url(config, api_url)
     config.api_url = target_api_url
@@ -394,6 +412,17 @@ def setup_local(
     open_tui: bool,
     no_input: bool,
 ):
+    """Bootstrap a local Docker-backed control plane on localhost:8000.
+
+    \b
+    Use this when:
+      - You want to run the full stack locally without a remote account
+      - You are developing against the MUTX API on your own machine
+      - You need offline or air-gapped operation
+
+    Requires Docker (or compatible container runtime).
+    After setup, run `mutx doctor` to verify everything is wired correctly.
+    """
     current_config().api_url = LOCAL_API_URL
 
     try:

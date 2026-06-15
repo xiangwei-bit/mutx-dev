@@ -33,6 +33,19 @@ mutx setup local    # Docker-backed
 mutx doctor         # Verify everything's wired
 ```
 
+### First-run troubleshooting
+
+| Situation | Command | What it does |
+|-----------|---------|--------------|
+| Not sure where to start | `mutx setup hosted` | Fastest path — connect to `api.mutx.dev`, create or log in to an account |
+| Want everything local | `mutx setup local` | Boots the full stack on `localhost:8000` via Docker |
+| Commands fail with auth or URL errors | `mutx status` | Shows which API the CLI targets and whether you're logged in |
+| Need a full health check | `mutx doctor` | Tests API reachability, OpenClaw gateway, document engine, and assistant state |
+| Setup is done, want guided next steps | `mutx onboard` | Walks through account, assistant creation, and TUI launch |
+| Verify local runtime is registered | `mutx runtime inspect openclaw` | Shows binary path, gateway URL, bindings, and remote sync state |
+
+Run `mutx --help` for the complete command list.
+
 ## Development
 
 ```bash

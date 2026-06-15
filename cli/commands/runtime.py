@@ -14,7 +14,16 @@ from cli.setup_wizard import prepare_runtime_state_sync
 
 @click.group(name="runtime")
 def runtime_group():
-    """Inspect and sync local provider runtimes tracked by MUTX."""
+    """Inspect and sync local provider runtimes tracked by MUTX.
+
+    \b
+    Common commands:
+      mutx runtime list            List all tracked provider runtimes
+      mutx runtime inspect <name>  Show detailed runtime state (local + remote)
+      mutx runtime resync <name>   Re-sync local runtime state with the control plane
+
+    Run `mutx runtime inspect openclaw` after setup to confirm your runtime is registered.
+    """
     pass
 
 
